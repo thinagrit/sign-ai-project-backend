@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # ⚙️ 1. Database Setup (SQLite)
 # ==========================================
-DATABASE_URL = "postgresql://thaimed_db_user:7qCAvO14szgLf3FfToANxFq5xOugRxRq@dpg-d5600t6r433s73dslnlg-a.singapore-postgres.render.com/thaimed_db"
+# ใช้ SQLite สำหรับเก็บข้อมูลพิกัดมือ
+DATABASE_URL = "sqlite:///./sign_language.db"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -28,7 +29,7 @@ class SignModel(Base):
     __tablename__ = "signs"
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String, index=True)
-    landmarks = Column(JSON)  # เก็บพิกัดทั้งหมดของทั้งสองมือ
+    landmarks = Column(JSON)  # เก็บ list ของ float
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
@@ -54,80 +55,102 @@ app.add_middleware(
 )
 
 # --- Data Schemas ---
-# ปรับ Schema ให้รองรับชื่อฟิลด์ 'points' สำหรับหน้า Data และ 'landmark' สำหรับหน้า Predict
 class DataInput(BaseModel):
     label: Optional[str] = None
-    points: Optional[List[float]] = None   # สำหรับ /upload_video
-    landmark: Optional[List[float]] = None # สำหรับ /predict_realtime
+    points: Optional[List[float]] = None   # จากหน้า Data (App.jsx)
+    landmark: Optional[List[float]] = None # จากหน้า Predict (App.jsx)
 
 # --- Helper Function ---
 def calculate_distance(p1, p2):
-    if not p1 or not p2 or len(p1) != len(p2):
+    """คำนวณระยะห่างระหว่างชุดพิกัด (Euclidean Distance)"""
+    if not p1 or not p2:
         return 1000.0
-    return math.sqrt(sum((a - b) ** 2 for a, b in zip(p1, p2)))
+    
+    # คำนวณเฉพาะจุดที่มีคู่กัน (ป้องกันกรณีมือ 1 ข้าง vs 2 ข้าง)
+    length = min(len(p1), len(p2))
+    if length == 0:
+        return 1000.0
+        
+    sum_sq = 0
+    for i in range(length):
+        sum_sq += (p1[i] - p2[i]) ** 2
+    return math.sqrt(sum_sq)
 
 # ==========================================
-# 📡 3. API Endpoints (Fixed Paths)
+# 📡 3. API Endpoints
 # ==========================================
 
 @app.get("/")
 async def read_root():
-    return {"status": "online", "message": "Backend is running and ready for Render deployment"}
+    return {"status": "online", "message": "Backend is running"}
 
-# แก้ไข Path ให้ตรงกับ Frontend: /upload_video
 @app.post("/upload_video")
-@app.post("/upload") # รองรับทั้งสองแบบเพื่อความชัวร์
+@app.post("/upload")
 async def upload_data(payload: DataInput, db: Session = Depends(get_db)):
     try:
-        points = payload.points if payload.points else payload.landmark
-        if not payload.label or not points:
-            raise HTTPException(status_code=400, detail="Missing label or landmarks")
+        # ตรวจสอบว่าข้อมูลมาทางไหน (points หรือ landmark)
+        input_points = payload.points if payload.points is not None else payload.landmark
         
-        new_sign = SignModel(label=payload.label, landmarks=points)
+        if not payload.label:
+            raise HTTPException(status_code=400, detail="กรุณาระบุชื่อท่าทาง (label)")
+        if not input_points:
+            raise HTTPException(status_code=400, detail="ไม่พบข้อมูลพิกัดมือ (points/landmark)")
+        
+        new_sign = SignModel(
+            label=payload.label, 
+            landmarks=input_points
+        )
         db.add(new_sign)
         db.commit()
         
-        logger.info(f"Saved label: {payload.label}")
-        return {"status": "success", "message": f"Saved '{payload.label}' to database"}
+        logger.info(f"✅ บันทึกสำเร็จ: {payload.label} (Data size: {len(input_points)})")
+        return {"status": "success", "message": f"บันทึกท่า '{payload.label}' เรียบร้อย"}
     except Exception as e:
         db.rollback()
-        logger.error(f"Upload Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Upload Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-# แก้ไข Path ให้ตรงกับ Frontend: /predict_realtime
 @app.post("/predict_realtime")
-@app.post("/predict") # รองรับทั้งสองแบบเพื่อความชัวร์
+@app.post("/predict")
 async def predict_realtime(payload: DataInput, db: Session = Depends(get_db)):
     try:
-        current_points = payload.landmark if payload.landmark else payload.points
+        # ดึงพิกัดจากฟิลด์ที่ส่งมา
+        current_points = payload.landmark if payload.landmark is not None else payload.points
+        
         if not current_points:
             return {"label": "ไม่พบพิกัดมือ", "confidence": 0}
 
+        # ดึงข้อมูลทั้งหมดมาเปรียบเทียบ (แบบง่าย)
         signs = db.query(SignModel).all()
         if not signs:
-            return {"label": "ฐานข้อมูลว่างเปล่า", "confidence": 0}
+            return {"label": "ยังไม่มีข้อมูลสอน", "confidence": 0}
         
-        best_label = "ไม่รู้จัก"
-        min_dist = 1000.0
+        best_label = "รอตรวจจับ..."
+        min_dist = float('inf')
         
         for item in signs:
-            if len(current_points) != len(item.landmarks):
-                continue
             dist = calculate_distance(current_points, item.landmarks)
+            
+            # ปรับจูนค่าความต่างตามจำนวนมือ (ถ้ามี 2 มือระยะห่างจะเยอะขึ้นตามธรรมชาติ)
             if dist < min_dist:
                 min_dist = dist
                 best_label = item.label
         
-        confidence = 1.0 / (1.0 + (min_dist * 5.0))
+        # คำนวณ Confidence (1.0 คือใกล้มาก, 0 คือห่างมาก)
+        # ปรับตัวหารตามความเหมาะสมของพิกัด MediaPipe
+        confidence = 1.0 / (1.0 + (min_dist * 3.0))
         
-        # กรองผลลัพธ์ที่ห่างเกินไป
-        if min_dist > 0.8:
-            return {"label": "รอตรวจจับ...", "confidence": confidence}
+        # ตัดเกณฑ์ (Threshold) ถ้าห่างเกินไปแสดงว่าไม่ใช่ท่าที่สอนไว้
+        if min_dist > 1.2:
+            return {"label": "ไม่รู้จักท่าทางนี้", "confidence": round(confidence, 2)}
             
-        return {"label": best_label, "confidence": round(confidence, 2)}
+        return {
+            "label": best_label, 
+            "confidence": round(confidence, 2)
+        }
         
     except Exception as e:
-        logger.error(f"Predict Error: {e}")
+        logger.error(f"❌ Predict Error: {str(e)}")
         return {"label": "Error", "confidence": 0}
 
 if __name__ == "__main__":
