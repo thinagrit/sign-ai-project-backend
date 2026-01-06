@@ -1,144 +1,98 @@
-import os
-import math
-import datetime
-import logging
-from typing import List, Optional
-
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, exc
-from sqlalchemy.orm import sessionmaker, Session, declarative_base
+from typing import List, Optional
+import uvicorn
 
-# --- Configuration & Logging ---
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+app = FastAPI(title="ThaiMed Sign AI Backend")
 
-# ==========================================
-# ⚙️ 1. Database Setup
-# ==========================================
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./test.db")
-
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-class SignModel(Base):
-    __tablename__ = "signs"
-    id = Column(Integer, primary_key=True, index=True)
-    label = Column(String, index=True)
-    landmarks = Column(JSON)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-Base.metadata.create_all(bind=engine)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# ==========================================
-# 🚀 2. FastAPI & CORS (The Ultimate Fix)
-# ==========================================
-app = FastAPI(title="Thai Medical Sign AI API")
-
-# อนุญาตทุกอย่างแบบกว้างที่สุดเพื่อแก้ปัญหา Vercel Dynamic URL
+# ตั้งค่า CORS เพื่อให้ Frontend (React) ติดต่อได้
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # อนุญาตทุกโดเมน
+    allow_origins=["*"],  # ในโปรดักชั่นควรระบุโดเมนที่แน่นอน
     allow_credentials=True,
-    allow_methods=["*"],  # อนุญาตทุก Method (GET, POST, OPTIONS)
-    allow_headers=["*"],  # อนุญาตทุก Header
-    expose_headers=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Middleware พิเศษสำหรับดักจับ Error และส่ง CORS Header กลับไปเสมอ
-@app.middleware("http")
-async def cors_handler(request: Request, call_next):
-    try:
-        response = await call_next(request)
-        return response
-    except Exception as e:
-        logger.error(f"Global Error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal Server Error"},
-            headers={"Access-Control-Allow-Origin": "*"}
-        )
+# --- Data Models ---
 
-# --- Schemas ---
-class LandmarkInput(BaseModel):
-    label: Optional[str] = None
-    points: List[float]
+class LandmarkSequence(BaseModel):
+    label: str
+    sequence: List[List[float]]  # รับข้อมูล 60 เฟรม (แต่ละเฟรมคือ list ของตัวเลข)
 
-def calculate_distance(p1, p2):
-    if not p1 or not p2 or len(p1) != len(p2):
-        return 1000.0
-    return math.sqrt(sum((a - b) ** 2 for a, b in zip(p1, p2)))
+class PredictSequence(BaseModel):
+    sequence: List[List[float]]  # รับข้อมูล 60 เฟรมเพื่อทำนาย
 
-# ==========================================
-# 📡 3. API Endpoints
-# ==========================================
+# --- Mock Database / Logic ---
+
+# ในที่นี้ใช้ List เก็บข้อมูลชั่วคราว (ในงานจริงควรใช้ Database หรือบันทึกเป็นไฟล์ .npy)
+recorded_data = []
 
 @app.get("/")
-async def read_root():
-    return {"status": "online", "message": "CORS Fixed"}
+async def root():
+    return {"message": "ThaiMed Sign AI API is running"}
 
-@app.get("/dataset")
-async def get_dataset(db: Session = Depends(get_db)):
-    try:
-        signs = db.query(SignModel).all()
-        return [{"label": s.label, "landmarks": s.landmarks} for s in signs]
-    except Exception as e:
-        logger.error(f"Dataset Fetch Error: {e}")
-        raise HTTPException(status_code=500, detail="Database Error")
+@app.post("/upload_video")
+async def upload_video(data: LandmarkSequence):
+    """
+    รับข้อมูล 60 เฟรม และชื่อท่าทาง เพื่อนำไปใช้ในการ Train โมเดล
+    """
+    if len(data.sequence) == 0:
+        raise HTTPException(status_code=400, detail="Sequence is empty")
+    
+    # ตัวอย่างการเก็บข้อมูล: ในที่นี้เราเก็บไว้ใน RAM
+    recorded_data.append({
+        "label": data.label,
+        "frames_count": len(data.sequence)
+    })
+    
+    print(f"ได้รับข้อมูลท่าทาง: {data.label} จำนวน {len(data.sequence)} เฟรม")
+    
+    # TODO: บันทึกข้อมูลลงไฟล์ .csv หรือ .npy สำหรับนำไป Train
+    # import numpy as np
+    # np.save(f"data/{data.label}_{timestamp}.npy", np.array(data.sequence))
 
-@app.post("/upload")
-async def upload_data(payload: LandmarkInput, db: Session = Depends(get_db)):
-    try:
-        if not payload.label or not payload.points:
-            raise HTTPException(status_code=400, detail="Data incomplete")
-        new_sign = SignModel(label=payload.label, landmarks=payload.points)
-        db.add(new_sign)
-        db.commit()
-        return {"status": "success"}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Upload Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "success", 
+        "message": f"บันทึกท่าทาง '{data.label}' เรียบร้อยแล้ว",
+        "total_records": len(recorded_data)
+    }
 
-@app.post("/predict")
-async def predict(payload: LandmarkInput, db: Session = Depends(get_db)):
-    try:
-        signs = db.query(SignModel).all()
-        if not signs:
-            return {"label": "ไม่มีข้อมูลในระบบ", "confidence": 0}
-        
-        best_label = "ไม่รู้จัก"
-        min_dist = 1000.0
-        
-        for item in signs:
-            # ตรวจสอบขนาดข้อมูล (1 มือ = 63, 2 มือ = 126)
-            if len(payload.points) != len(item.landmarks):
-                continue
-            dist = calculate_distance(payload.points, item.landmarks)
-            if dist < min_dist:
-                min_dist = dist
-                best_label = item.label
-                
-        confidence = 1.0 / (1.0 + (min_dist * 5.0))
-        if min_dist > 0.6:
-            return {"label": "ไม่แน่ใจ", "confidence": confidence}
-            
-        return {"label": best_label, "confidence": confidence}
-    except Exception as e:
-        logger.error(f"Predict Error: {e}")
-        raise HTTPException(status_code=500, detail="Prediction error")
+@app.post("/predict_video")
+async def predict_video(data: PredictSequence):
+    """
+    รับข้อมูล 60 เฟรมล่าสุดจากหน้า Predict และส่งให้โมเดล LSTM/GRU วิเคราะห์
+    """
+    sequence_data = data.sequence
+    
+    # ตรวจสอบความครบถ้วนของข้อมูล
+    if len(sequence_data) < 10: # อย่างน้อยต้องมีข้อมูลบ้าง
+        return {"label": "กำลังเตรียมข้อมูล...", "confidence": 0}
+
+    # --- ส่วนการทำนาย (TODO: โหลดโมเดลจริงมาใช้ที่นี่) ---
+    # ตัวอย่างโครงสร้าง:
+    # 1. ปรับรูปทรงข้อมูล (Reshape) ให้ตรงกับโมเดล: (1, 60, 63) หรือ (1, 60, 126)
+    # 2. model.predict(input_data)
+    # 3. ดึงชื่อคลาสที่มีความน่าจะเป็นสูงสุด
+    
+    # จำลองผลลัพธ์ (Mock Output)
+    mock_labels = ["ปวดหัว", "เจ็บหน้าอก", "หายใจไม่ออก", "หมอ"]
+    import random
+    
+    # ในหน้างานจริงจะใช้โมเดลวิเคราะห์ sequence_data
+    predicted_label = "รอการเคลื่อนไหว..."
+    confidence = 0.0
+    
+    # ตัวอย่าง: ถ้ามีข้อมูลใกล้ครบ 60 เฟรม ให้สุ่มคำออกมาโชว์
+    if len(sequence_data) >= 50:
+        predicted_label = random.choice(mock_labels)
+        confidence = round(random.uniform(0.85, 0.99), 2)
+
+    return {
+        "label": predicted_label,
+        "confidence": confidence
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
