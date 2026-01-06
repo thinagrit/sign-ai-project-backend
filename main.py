@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # ⚙️ 1. Database Setup (SQLite)
 # ==========================================
-DATABASE_URL = "postgresql://thaimed_db_user:7qCAvO14szgLf3FfToANxFq5xOugRxRq@dpg-d5600t6r433s73dslnlg-a/thaimed_db"
+DATABASE_URL = "postgresql://thaimed_db_user:7qCAvO14szgLf3FfToANxFq5xOugRxRq@dpg-d5600t6r433s73dslnlg-a.singapore-postgres.render.com/thaimed_db"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
