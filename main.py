@@ -16,12 +16,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# ⚙️ 1. Database Setup (SQLite)
+# ⚙️ 1. Database Setup (PostgreSQL for Render)
 # ==========================================
-# ใช้ SQLite สำหรับเก็บข้อมูลพิกัดมือ
-DATABASE_URL = "sqlite:///./sign_language.db"
+# ดึงค่า URL ของฐานข้อมูลจาก Environment Variable ที่ Render กำหนดให้
+# หากไม่มี (เช่น รันในเครื่อง) จะใช้ SQLite เป็นค่าเริ่มต้นแทน
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# สำหรับ Render PostgreSQL บางกรณี URL จะขึ้นต้นด้วย postgres:// ให้เปลี่ยนเป็น postgresql://
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///./sign_language.db"
+    logger.info("Using local SQLite database")
+else:
+    logger.info("Using remote PostgreSQL database")
+
+# สร้าง Engine สำหรับเชื่อมต่อ (กรณี SQLite ต้องใช้ check_same_thread=False)
+if "sqlite" in DATABASE_URL:
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(DATABASE_URL)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -29,9 +45,10 @@ class SignModel(Base):
     __tablename__ = "signs"
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String, index=True)
-    landmarks = Column(JSON)  # เก็บ list ของ float
+    landmarks = Column(JSON)  # เก็บ list ของพิกัดมือ
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+# สร้าง Table ใน Database (ถ้ายังไม่มี)
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -66,7 +83,6 @@ def calculate_distance(p1, p2):
     if not p1 or not p2:
         return 1000.0
     
-    # คำนวณเฉพาะจุดที่มีคู่กัน (ป้องกันกรณีมือ 1 ข้าง vs 2 ข้าง)
     length = min(len(p1), len(p2))
     if length == 0:
         return 1000.0
@@ -82,13 +98,12 @@ def calculate_distance(p1, p2):
 
 @app.get("/")
 async def read_root():
-    return {"status": "online", "message": "Backend is running"}
+    return {"status": "online", "message": "Backend is running with PostgreSQL support"}
 
 @app.post("/upload_video")
 @app.post("/upload")
 async def upload_data(payload: DataInput, db: Session = Depends(get_db)):
     try:
-        # ตรวจสอบว่าข้อมูลมาทางไหน (points หรือ landmark)
         input_points = payload.points if payload.points is not None else payload.landmark
         
         if not payload.label:
@@ -103,7 +118,7 @@ async def upload_data(payload: DataInput, db: Session = Depends(get_db)):
         db.add(new_sign)
         db.commit()
         
-        logger.info(f"✅ บันทึกสำเร็จ: {payload.label} (Data size: {len(input_points)})")
+        logger.info(f"✅ บันทึกสำเร็จ: {payload.label}")
         return {"status": "success", "message": f"บันทึกท่า '{payload.label}' เรียบร้อย"}
     except Exception as e:
         db.rollback()
@@ -114,13 +129,11 @@ async def upload_data(payload: DataInput, db: Session = Depends(get_db)):
 @app.post("/predict")
 async def predict_realtime(payload: DataInput, db: Session = Depends(get_db)):
     try:
-        # ดึงพิกัดจากฟิลด์ที่ส่งมา
         current_points = payload.landmark if payload.landmark is not None else payload.points
         
         if not current_points:
             return {"label": "ไม่พบพิกัดมือ", "confidence": 0}
 
-        # ดึงข้อมูลทั้งหมดมาเปรียบเทียบ (แบบง่าย)
         signs = db.query(SignModel).all()
         if not signs:
             return {"label": "ยังไม่มีข้อมูลสอน", "confidence": 0}
@@ -130,17 +143,12 @@ async def predict_realtime(payload: DataInput, db: Session = Depends(get_db)):
         
         for item in signs:
             dist = calculate_distance(current_points, item.landmarks)
-            
-            # ปรับจูนค่าความต่างตามจำนวนมือ (ถ้ามี 2 มือระยะห่างจะเยอะขึ้นตามธรรมชาติ)
             if dist < min_dist:
                 min_dist = dist
                 best_label = item.label
         
-        # คำนวณ Confidence (1.0 คือใกล้มาก, 0 คือห่างมาก)
-        # ปรับตัวหารตามความเหมาะสมของพิกัด MediaPipe
         confidence = 1.0 / (1.0 + (min_dist * 3.0))
         
-        # ตัดเกณฑ์ (Threshold) ถ้าห่างเกินไปแสดงว่าไม่ใช่ท่าที่สอนไว้
         if min_dist > 1.2:
             return {"label": "ไม่รู้จักท่าทางนี้", "confidence": round(confidence, 2)}
             
