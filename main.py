@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # ดึงค่า URL ของฐานข้อมูลจาก Environment Variable ที่ Render กำหนดให้
 # หากไม่มี (เช่น รันในเครื่อง) จะใช้ SQLite เป็นค่าเริ่มต้นแทน
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = os.environ.get("postgresql://thaimed_db_user:7qCAvO14szgLf3FfToANxFq5xOugRxRq@dpg-d5600t6r433s73dslnlg-a/thaimed_db")
 
 # สำหรับ Render PostgreSQL บางกรณี URL จะขึ้นต้นด้วย postgres:// ให้เปลี่ยนเป็น postgresql://
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
