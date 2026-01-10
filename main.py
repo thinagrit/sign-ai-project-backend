@@ -1,199 +1,491 @@
-import os
-import math
-import datetime
-import logging
-from typing import List
-from contextlib import asynccontextmanager
+import React, { useEffect, useRef, useState } from "react";
+import { HandLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { 
+  Loader2, Camera, Hand, Save, 
+  Home as HomeIcon, Database, Activity, 
+  CheckCircle, RefreshCw, ServerCrash,
+  HeartPulse, Brain, BookOpen, 
+  Video, MonitorCheck, StopCircle, WifiOff
+} from "lucide-react";
 
-from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime
-from sqlalchemy.orm import sessionmaker, Session, declarative_base
+// ==============================================
+// ⚙️ ตั้งค่า API (URL สำหรับ Backend บน Render)
+// ==============================================
+const API_URL = "https://sign-ai-project-backend.onrender.com"; 
+// ==============================================
 
-# ==========================================
-# 🔧 Configuration & Logging
-# ==========================================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ThaiMedSignAPI")
+// --- Components ---
 
-DATABASE_URL = os.environ.get(
-    "postgresql://thaimed_db_user:7qCAvO14szgLf3FfToANxFq5xOugRxRq@dpg-d5600t6r433s73dslnlg-a/thaimed_db",
-    "sqlite:///./thaimed_sign.db"
-)
+function Navbar({ page, setPage }) {
+  const menus = [
+    { id: "home", label: "หน้าหลัก", icon: <HomeIcon size={20} /> },
+    { id: "data", label: "สอนท่ามือ", icon: <Database size={20} /> },
+    { id: "dictionary", label: "คลังคำศัพท์", icon: <BookOpen size={20} /> },
+    { id: "predict", label: "แปลภาษา", icon: <Activity size={20} /> },
+  ];
 
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+  return (
+    <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200/60 shadow-sm">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6">
+        <div className="flex justify-between items-center h-16">
+          <div 
+            className="flex items-center gap-2 font-bold text-2xl cursor-pointer"
+            onClick={() => setPage("home")}
+          >
+            <div className="bg-gradient-to-tr from-blue-600 to-cyan-500 p-2 rounded-lg shadow-lg">
+              <Hand className="text-white w-6 h-6" />
+            </div>
+            <span className="bg-clip-text text-transparent bg-gradient-to-r from-slate-800 to-slate-600">
+              ThaiMed<span className="font-light">AI</span>
+            </span>
+          </div>
 
-connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+          <div className="hidden md:flex bg-slate-100/50 p-1 rounded-xl">
+            {menus.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setPage(m.id)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 text-sm font-medium ${
+                  page === m.id 
+                    ? "bg-white text-blue-600 shadow-sm ring-1 ring-slate-200" 
+                    : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+                }`}
+              >
+                {m.icon}
+                <span className="hidden sm:inline">{m.label}</span>
+              </button>
+            ))}
+          </div>
 
-# ==========================================
-# 🗄️ Database Model (60 Frames Sequence)
-# ==========================================
-class SignSequence(Base):
-    __tablename__ = "sign_sequences"
+          <div className="md:hidden flex gap-2">
+             {menus.map((m) => (
+               <button
+                 key={m.id}
+                 onClick={() => setPage(m.id)}
+                 className={`p-2 rounded-lg ${page === m.id ? "bg-blue-100 text-blue-600" : "text-slate-500"}`}
+               >
+                 {m.icon}
+               </button>
+             ))}
+          </div>
+        </div>
+      </div>
+    </nav>
+  );
+}
 
-    id = Column(Integer, primary_key=True, index=True)
-    label = Column(String, index=True, nullable=False)
-    frames = Column(JSON, nullable=False)  # List[List[float]]
-    created_at = Column(
-        DateTime,
-        default=lambda: datetime.datetime.now(datetime.timezone.utc)
-    )
+function HomePage({ setPage }) {
+  return (
+    <div className="min-h-[calc(100vh-4rem)] flex flex-col justify-center items-center px-4 relative overflow-hidden">
+      <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-200/20 rounded-full blur-3xl -z-10 animate-pulse" />
+      <div className="max-w-4xl w-full text-center space-y-12">
+        <div className="space-y-6">
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-50 border border-blue-100 text-blue-600 text-sm font-medium shadow-sm">
+            <HeartPulse size={16} /> นวัตกรรมเพื่อการแพทย์ยุคใหม่
+          </div>
+          <h1 className="text-5xl md:text-7xl font-bold tracking-tight text-slate-900 leading-tight">
+            ระบบแปลภาษามือ<br/>
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-cyan-500">
+              ด้วยปัญญาประดิษฐ์
+            </span>
+          </h1>
+          <p className="text-xl text-slate-500 max-w-2xl mx-auto font-light leading-relaxed">
+            เชื่อมต่อการสื่อสารระหว่างบุคลากรทางการแพทย์และผู้บกพร่องทางการได้ยิน
+          </p>
+        </div>
 
-# ==========================================
-# 🔁 Dependency
-# ==========================================
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+        <div className="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+          <button onClick={() => setPage("data")} className="group p-6 bg-white rounded-3xl border border-slate-100 shadow-xl hover:-translate-y-1 transition-all text-left">
+            <div className="h-12 w-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-4">
+              <Database size={24} />
+            </div>
+            <h3 className="text-xl font-bold text-slate-800 mb-1">สอนท่ามือ</h3>
+            <p className="text-slate-500 text-sm">บันทึก 60 เฟรมต่อเนื่อง</p>
+          </button>
 
-# ==========================================
-# 🚀 App Lifespan
-# ==========================================
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database ready")
-    except Exception as e:
-        logger.error(f"DB init error: {e}")
-    yield
+          <button onClick={() => setPage("dictionary")} className="group p-6 bg-white rounded-3xl border border-slate-100 shadow-xl hover:-translate-y-1 transition-all text-left">
+            <div className="h-12 w-12 bg-purple-50 rounded-xl flex items-center justify-center text-purple-600 mb-4">
+              <BookOpen size={24} />
+            </div>
+            <h3 className="text-xl font-bold text-slate-800 mb-1">คลังคำศัพท์</h3>
+            <p className="text-slate-500 text-sm">ดูรายการคำศัพท์ที่มีอยู่ใน Dataset</p>
+          </button>
 
-app = FastAPI(
-    title="Thai Medical Sign AI – Sequence API",
-    lifespan=lifespan
-)
+          <button onClick={() => setPage("predict")} className="group p-6 bg-slate-900 rounded-3xl shadow-xl hover:-translate-y-1 transition-all text-left">
+            <div className="h-12 w-12 bg-white/10 rounded-xl flex items-center justify-center text-cyan-400 mb-4">
+              <Activity size={24} />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-1">แปลภาษา</h3>
+            <p className="text-slate-400 text-sm">แปลผลแบบ Sliding Window</p>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-# ==========================================
-# 🌍 CORS
-# ==========================================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+function DictionaryPage() {
+  const [stats, setStats] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-# ==========================================
-# ❗ Global Error Handler
-# ==========================================
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal Server Error"},
-    )
+  useEffect(() => {
+    let isMounted = true;
+    const fetchData = async () => {
+        try {
+            const res = await fetch(`${API_URL}/dataset`);
+            if (!res.ok) throw new Error("Failed to connect");
+            const data = await res.json();
+            if (isMounted) {
+                const grouped = data.reduce((acc, curr) => {
+                    acc[curr.label] = (acc[curr.label] || 0) + 1;
+                    return acc;
+                }, {});
+                setStats(Object.entries(grouped).map(([label, count]) => ({ label, count })));
+                setLoading(false);
+            }
+        } catch (err) {
+            if (isMounted) {
+                setError("เชื่อมต่อไม่ได้ (ตรวจสอบการตั้งค่า Backend)");
+                setLoading(false);
+            }
+        }
+    };
+    fetchData();
+    return () => { isMounted = false; };
+  }, []);
 
-# ==========================================
-# 📐 Schemas
-# ==========================================
-class SequenceInput(BaseModel):
-    label: str = Field(..., example="ปวดหัว")
-    frames: List[List[float]] = Field(
-        ..., description="Exactly 60 frames of flattened landmarks"
-    )
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-8">
+      <h2 className="text-3xl font-bold mb-8 flex items-center gap-3">
+        <BookOpen className="text-purple-500" /> คลังคำศัพท์ในระบบ
+      </h2>
+      {loading ? <div className="text-center py-20"><Loader2 className="animate-spin mx-auto w-10 h-10 text-blue-500" /></div> : 
+       error ? <div className="bg-red-50 text-red-500 p-10 text-center rounded-3xl border border-red-100">{error}</div> :
+       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+         {stats.map((s, i) => (
+           <div key={i} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm hover:border-purple-200 transition-colors">
+             <h3 className="text-xl font-bold text-slate-800">{s.label}</h3>
+             <p className="text-slate-400 font-medium">{s.count} Sequences</p>
+           </div>
+         ))}
+       </div>
+      }
+    </div>
+  );
+}
 
-class PredictResponse(BaseModel):
-    label: str
-    confidence: float
+// --- MediaPipe Logic ---
+const useHandTracking = (videoRef, onResults) => {
+  const [loading, setLoading] = useState(true);
+  const landmarkerRef = useRef(null);
 
-# ==========================================
-# 🧮 Sequence Distance Logic
-# ==========================================
-def sequence_distance(seq1: List[List[float]], seq2: List[List[float]]) -> float:
-    if len(seq1) != len(seq2):
-        return float("inf")
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        const landmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-assets/hand_landmarker.task",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numHands: 2
+        });
+        if(isMounted) {
+          landmarkerRef.current = landmarker;
+          setLoading(false);
+        }
+      } catch(e) { console.error("MediaPipe Error:", e); }
+    })();
+    return () => { isMounted = false; };
+  }, []);
 
-    total = 0.0
-    valid = 0
+  const processVideo = () => {
+    const video = videoRef.current;
+    const landmarker = landmarkerRef.current;
 
-    for f1, f2 in zip(seq1, seq2):
-        if len(f1) != len(f2):
-            continue
-        total += math.sqrt(sum((a - b) ** 2 for a, b in zip(f1, f2)))
-        valid += 1
-
-    return total / max(valid, 1)
-
-# ==========================================
-# 📡 API Endpoints
-# ==========================================
-@app.get("/")
-def root():
-    return {"status": "online", "mode": "60-frame-sequence"}
-
-@app.get("/dataset")
-def dataset(db: Session = Depends(get_db)):
-    records = db.query(SignSequence).all()
-    return [
+    if (video && landmarker && video.readyState >= 2) {
+      // ✅ ส่ง imageWidth/Height เพื่อกำจัด OpenGL Warning
+      const results = landmarker.detectForVideo(
+        video, 
+        performance.now(),
         {
-            "id": r.id,
-            "label": r.label,
-            "samples": len(r.frames)
+          imageWidth: video.videoWidth,
+          imageHeight: video.videoHeight,
         }
-        for r in records
-    ]
-
-@app.post("/upload-sequence")
-def upload_sequence(payload: SequenceInput, db: Session = Depends(get_db)):
-    if len(payload.frames) != 60:
-        raise HTTPException(
-            status_code=400,
-            detail="frames ต้องมี 60 เฟรมเท่านั้น"
-        )
-
-    try:
-        record = SignSequence(
-            label=payload.label,
-            frames=payload.frames
-        )
-        db.add(record)
-        db.commit()
-        db.refresh(record)
-        return {
-            "status": "success",
-            "id": record.id,
-            "label": record.label
-        }
-    except Exception as e:
-        db.rollback()
-        logger.error(e)
-        raise HTTPException(500, "Upload failed")
-
-@app.post("/predict-sequence", response_model=PredictResponse)
-def predict_sequence(payload: SequenceInput, db: Session = Depends(get_db)):
-    records = db.query(SignSequence).all()
-    if not records:
-        return {"label": "ไม่มีข้อมูล", "confidence": 0.0}
-
-    best_label = "ไม่รู้จัก"
-    min_dist = float("inf")
-
-    for r in records:
-        dist = sequence_distance(payload.frames, r.frames)
-        if dist < min_dist:
-            min_dist = dist
-            best_label = r.label
-
-    confidence = 1 / (1 + min_dist * 3)
-
-    if min_dist > 1.0:
-        return {
-            "label": "ไม่แน่ใจ",
-            "confidence": round(confidence, 4)
-        }
-
-    return {
-        "label": best_label,
-        "confidence": round(confidence, 4)
+      );
+      onResults(results);
     }
+    requestAnimationFrame(processVideo);
+  };
+  return { loading, startLoop: processVideo };
+};
+
+function CameraView({ onLandmarks, overlayText, showSkeleton = true }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const [cameraActive, setCameraActive] = useState(false);
+
+  const { loading, startLoop } = useHandTracking(videoRef, (results) => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+
+    const ctx = canvas.getContext("2d");
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.translate(-canvas.width, 0);
+
+    if (results.landmarks && results.landmarks.length > 0) {
+      if (showSkeleton) {
+        results.landmarks.forEach(hand => {
+          hand.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x * canvas.width, p.y * canvas.height, 4, 0, 2 * Math.PI);
+            ctx.fillStyle = "#3B82F6";
+            ctx.fill();
+            ctx.strokeStyle = "white";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          });
+        });
+      }
+      // ดึงข้อมูล 21 จุด (x, y, z)
+      const flatPoints = results.landmarks.flatMap(hand => hand.flatMap(p => [p.x, p.y, p.z]));
+      onLandmarks(flatPoints);
+    } else {
+      onLandmarks(null);
+    }
+    ctx.restore();
+  });
+
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 1280, height: 720, facingMode: "user" } 
+      });
+      videoRef.current.srcObject = stream;
+      videoRef.current.onloadedmetadata = () => {
+        videoRef.current.play();
+        setCameraActive(true);
+        startLoop();
+      };
+    } catch (e) { alert("ไม่สามารถเข้าถึงกล้องได้"); }
+  };
+
+  return (
+    <div className="relative rounded-3xl overflow-hidden bg-slate-900 aspect-video shadow-2xl border border-slate-800 ring-4 ring-slate-100">
+      {loading && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-white z-20 bg-slate-900">
+          <Loader2 className="animate-spin mb-4 text-blue-500 w-10 h-10" />
+          <p className="font-medium animate-pulse">กำลังดาวน์โหลด AI Hand Engine...</p>
+        </div>
+      )}
+      {!loading && !cameraActive && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 bg-slate-900/40 backdrop-blur-sm">
+          <button onClick={startCamera} className="px-8 py-4 bg-white text-slate-900 rounded-full font-bold shadow-2xl flex items-center gap-3 hover:scale-105 transition-transform active:scale-95">
+            <Camera size={24} className="text-blue-600" /> <span>เริ่มต้นเปิดกล้อง</span>
+          </button>
+        </div>
+      )}
+      <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1]" playsInline muted />
+      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1]" />
+      {overlayText && cameraActive && (
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-30">
+           <div className="bg-slate-900/80 text-white px-6 py-2 rounded-full border border-white/20 text-sm font-medium backdrop-blur-md shadow-xl flex items-center gap-2">
+             <div className="w-2 h-2 bg-red-500 rounded-full animate-ping" />
+             {overlayText}
+           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DataPage() {
+  const [currentLandmarks, setCurrentLandmarks] = useState(null);
+  const [label, setLabel] = useState("");
+  const [status, setStatus] = useState("ready");
+  const [progress, setProgress] = useState(0);
+  const framesBuffer = useRef([]);
+
+  const handleLandmarksUpdate = (points) => {
+    setCurrentLandmarks(points);
+    if (status === "recording" && points) {
+        framesBuffer.current.push(points);
+        setProgress(framesBuffer.current.length);
+        if (framesBuffer.current.length >= 60) finishRecording();
+    }
+  };
+
+  const startRecording = () => {
+    if (!label.trim()) return alert("กรุณาระบุชื่อท่ามือที่ต้องการสอน");
+    if (!currentLandmarks) return alert("AI ยังตรวจจับมือไม่เจอ กรุณายกมือขึ้นครับ");
+    framesBuffer.current = [];
+    setProgress(0);
+    setStatus("recording");
+  };
+
+  const finishRecording = async () => {
+    setStatus("uploading");
+    try {
+      // ✅ เปลี่ยนเป็น /upload-sequence และ Schema: label, frames
+      const res = await fetch(`${API_URL}/upload-sequence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+            label: label.trim(), 
+            frames: framesBuffer.current 
+        })
+      });
+      if(!res.ok) throw new Error("ไม่สามารถส่งข้อมูลได้ (Check API Endpoint)");
+      setStatus("success");
+      setTimeout(() => setStatus("ready"), 2000);
+      setLabel(""); setProgress(0);
+    } catch (e) {
+      alert(`Error: ${e.message}`);
+      setStatus("ready");
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-8 flex flex-col lg:flex-row gap-10">
+      <div className="flex-1">
+        <CameraView onLandmarks={handleLandmarksUpdate} overlayText={status === "recording" ? `กำลังบันทึกเฟรม: ${progress}/60` : "พร้อมบันทึก (ต้องการ 60 เฟรม)"} />
+      </div>
+      <div className="lg:w-96 space-y-6">
+        <div className="bg-white p-6 rounded-3xl border shadow-sm">
+            <h2 className="text-xl font-bold mb-4 flex items-center gap-2"><Database size={20} className="text-blue-500"/> สอนท่าทางใหม่</h2>
+            <div className="space-y-4">
+                <input 
+                    type="text" 
+                    value={label} 
+                    onChange={e => setLabel(e.target.value)} 
+                    placeholder="เช่น ปวดหัว, ไม่สบาย..." 
+                    className="w-full p-4 border rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all" 
+                />
+                <button 
+                    onClick={startRecording} 
+                    disabled={status !== "ready"}
+                    className={`w-full py-4 rounded-2xl font-bold transition-all shadow-lg ${
+                        status === "recording" ? "bg-red-500 text-white animate-pulse" : 
+                        status === "uploading" ? "bg-slate-300 text-slate-500 cursor-not-allowed" :
+                        "bg-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-blue-500/20"
+                    }`}
+                >
+                    {status === "recording" ? `กำลังบันทึกข้อมูล (${progress}/60)` : 
+                     status === "uploading" ? "กำลังประมวลผล..." : 
+                     status === "success" ? "บันทึกสำเร็จ!" : "เริ่มการสอนท่าทาง"}
+                </button>
+                <p className="text-xs text-slate-400 text-center">รวบรวม 60 เฟรมเพื่อความแม่นยำในการวิเคราะห์</p>
+            </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PredictPage() {
+  const [result, setResult] = useState({ label: "รอการตรวจจับ...", confidence: 0 });
+  const [error, setError] = useState(false);
+  const [bufferCount, setBufferCount] = useState(0);
+  const framesRef = useRef([]); // สำหรับสะสม 60 เฟรม
+  const lastSentRef = useRef(0);
+
+  const handleLandmarks = async (points) => {
+    if (!points) {
+        // ถ้าไม่เจอจุด ให้ล้าง Buffer บางส่วนเพื่อป้องกันข้อมูลขาดตอน
+        if (framesRef.current.length > 0) framesRef.current.shift();
+        setBufferCount(framesRef.current.length);
+        return;
+    }
+
+    // ✅ เพิ่มข้อมูลลงใน Sliding Window Buffer
+    framesRef.current.push(points);
+    if (framesRef.current.length > 60) {
+        framesRef.current.shift(); // ลบเฟรมเก่าที่สุดออก
+    }
+    setBufferCount(framesRef.current.length);
+
+    // ต้องรอให้ครบ 60 เฟรมก่อนเริ่มส่ง Predict
+    if (framesRef.current.length < 60) return;
+
+    // หน่วงเวลาการส่ง เพื่อไม่ให้ Server ทำงานหนักเกินไป (ทุก 300ms)
+    const now = Date.now();
+    if (now - lastSentRef.current < 300) return;
+    lastSentRef.current = now;
+
+    try {
+      // ✅ เปลี่ยนเป็น /predict-sequence และ Schema: frames
+      const res = await fetch(`${API_URL}/predict-sequence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frames: framesRef.current }) 
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setResult(data);
+        setError(false);
+      } else { setError(true); }
+    } catch (e) { setError(true); }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-8 space-y-8">
+      {error && <div className="bg-red-50 text-red-500 p-4 rounded-2xl text-center border border-red-100 flex items-center justify-center gap-2">
+        <WifiOff size={18}/> ขัดข้อง: กรุณาตรวจสอบสถานะของ Server (Render)
+      </div>}
+      
+      <CameraView 
+        onLandmarks={handleLandmarks} 
+        overlayText={bufferCount < 60 ? `กำลังรวบรวมท่าทาง (${bufferCount}/60)...` : "พร้อมแปลผล"} 
+      />
+
+      <div className="p-10 bg-white rounded-[2.5rem] shadow-xl border text-center relative overflow-hidden group">
+        <div className="absolute top-0 left-0 w-full h-1 bg-slate-50 overflow-hidden">
+            <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${result.confidence * 100}%` }} />
+        </div>
+        
+        <p className="text-slate-400 text-sm font-semibold uppercase tracking-widest mb-2">คำแปลที่ได้</p>
+        <h2 className={`text-7xl font-black mb-6 transition-all ${result.confidence > 0.6 ? "text-blue-600 scale-105" : "text-slate-300"}`}>
+          {result.label}
+        </h2>
+
+        <div className="flex flex-col items-center gap-2">
+            <div className="flex items-center gap-3">
+                <span className="text-xs font-bold text-slate-400">ระดับความมั่นใจ</span>
+                <span className={`text-sm font-mono font-bold px-3 py-1 rounded-full ${result.confidence > 0.6 ? "bg-green-100 text-green-600" : "bg-slate-100 text-slate-500"}`}>
+                    {(result.confidence * 100).toFixed(1)}%
+                </span>
+            </div>
+            <p className="text-[10px] text-slate-300 uppercase tracking-tighter italic">Sequence Processing Enabled</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [page, setPage] = useState("home");
+  return (
+    <div className="min-h-screen bg-slate-50/50 pt-16 selection:bg-blue-100 selection:text-blue-900">
+      <Navbar page={page} setPage={setPage} />
+      <main className="container mx-auto">
+        {page === "home" && <HomePage setPage={setPage} />}
+        {page === "data" && <DataPage />}
+        {page === "dictionary" && <DictionaryPage />}
+        {page === "predict" && <PredictPage />}
+      </main>
+    </div>
+  );
+}
