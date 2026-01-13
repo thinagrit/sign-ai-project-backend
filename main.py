@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ThaiMedSignAPI")
 
 # ใช้ SQLite เป็นค่าเริ่มต้นเพื่อให้รันได้ทันที (ถ้ามี Postgres ใน Render มันจะเปลี่ยนเองอัตโนมัติ)
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./thaimed_sign.db")
+DATABASE_URL = os.environ.get("postgresql://thaimed_db_user:7qCAvO14szgLf3FfToANxFq5xOugRxRq@dpg-d5600t6r433s73dslnlg-a/thaimed_db", "sqlite:///./thaimed_sign.db")
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
