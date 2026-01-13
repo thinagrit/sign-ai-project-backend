@@ -24,8 +24,9 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./sign_language.db"
+    logger.info("Using local SQLite database")
 else:
-    logger.info("Connecting to PostgreSQL")
+    logger.info("Using remote PostgreSQL database")
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -35,7 +36,7 @@ class SignModel(Base):
     __tablename__ = "signs"
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String, index=True)
-    landmarks = Column(JSON)  
+    landmarks = Column(JSON)  # เก็บ list ของ float (63 หรือ 126 ค่า)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
@@ -46,7 +47,7 @@ def get_db():
     finally: db.close()
 
 # ==========================================
-# 🚀 2. Models & API Setup
+# 🚀 2. FastAPI & CORS Configuration
 # ==========================================
 app = FastAPI(title="Thai Medical Sign AI API")
 
@@ -58,57 +59,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class DataInput(BaseModel):
+# --- Data Schemas (แบบเฟรมเดียว) ---
+class LandmarkInput(BaseModel):
     label: Optional[str] = None
-    landmark: Optional[List[float]] = None 
-    sequence: Optional[List[List[float]]] = None # รองรับ 60 เฟรม
+    points: List[float] # รับอาเรย์ชุดเดียว (เช่น 63 ค่า)
 
+# --- Helper Function ---
 def calculate_distance(p1, p2):
     if not p1 or not p2: return 1000.0
     length = min(len(p1), len(p2))
     return math.sqrt(sum((p1[i] - p2[i]) ** 2 for i in range(length)))
 
 # ==========================================
-# 📡 3. Endpoints
+# 📡 3. API Endpoints
 # ==========================================
 
 @app.get("/")
 async def read_root():
-    return {"status": "online"}
+    return {"status": "online", "mode": "Single Frame"}
 
-@app.post("/upload_video")
-async def upload_video(payload: DataInput, db: Session = Depends(get_db)):
+@app.post("/upload")
+async def upload_data(payload: LandmarkInput, db: Session = Depends(get_db)):
     try:
-        # ถ้าส่งมาเป็น Sequence (60 เฟรม) ให้หาค่าเฉลี่ย (Mean) เพื่อเป็นตัวแทนท่าทาง
-        if payload.sequence and len(payload.sequence) > 0:
-            frame_count = len(payload.sequence)
-            point_count = len(payload.sequence[0])
-            avg_landmarks = []
-            for i in range(point_count):
-                avg_val = sum(frame[i] for frame in payload.sequence) / frame_count
-                avg_landmarks.append(avg_val)
-            pts = avg_landmarks
-        else:
-            pts = payload.landmark
-
-        if not payload.label or not pts:
-            raise HTTPException(status_code=400, detail="Missing label or data")
+        if not payload.label or not payload.points:
+            raise HTTPException(status_code=400, detail="Missing label or points")
         
-        new_sign = SignModel(label=payload.label, landmarks=pts)
+        new_sign = SignModel(label=payload.label, landmarks=payload.points)
         db.add(new_sign)
         db.commit()
-        return {"status": "success", "label": payload.label}
+        
+        logger.info(f"Saved: {payload.label}")
+        return {"status": "success", "message": f"Saved '{payload.label}'"}
     except Exception as e:
         db.rollback()
         logger.error(f"Upload Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/predict_realtime")
-async def predict_realtime(payload: DataInput, db: Session = Depends(get_db)):
+@app.post("/predict")
+async def predict(payload: LandmarkInput, db: Session = Depends(get_db)):
     try:
-        current_pts = payload.landmark
-        if not current_pts:
-            return {"label": "ไม่พบพิกัดมือ", "confidence": 0}
+        if not payload.points:
+            return {"label": "ไม่พบมือ", "confidence": 0}
 
         signs = db.query(SignModel).all()
         if not signs:
@@ -118,18 +109,28 @@ async def predict_realtime(payload: DataInput, db: Session = Depends(get_db)):
         min_dist = float('inf')
         
         for item in signs:
-            dist = calculate_distance(current_pts, item.landmarks)
+            # เทียบระยะห่างระหว่างจุดต่อจุด (Nearest Neighbor)
+            dist = calculate_distance(payload.points, item.landmarks)
             if dist < min_dist:
                 min_dist = dist
                 best_label = item.label
         
-        confidence = 1.0 / (1.0 + (min_dist * 2.5))
-        if min_dist > 1.2:
+        # คำนวณความมั่นใจ (ยิ่งห่างน้อย ยิ่งมั่นใจมาก)
+        confidence = 1.0 / (1.0 + (min_dist * 5.0))
+        
+        if min_dist > 0.8:
             return {"label": "ไม่รู้จักท่าทาง", "confidence": round(confidence, 2)}
             
         return {"label": best_label, "confidence": round(confidence, 2)}
     except Exception as e:
+        logger.error(f"Predict Error: {e}")
         return {"label": "Error", "confidence": 0}
 
+@app.get("/dataset")
+def get_dataset(db: Session = Depends(get_db)):
+    signs = db.query(SignModel).all()
+    return [{"label": s.label, "landmarks": s.landmarks, "created_at": s.created_at} for s in signs]
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
