@@ -1,7 +1,7 @@
 fastapi
 uvicorn
-tensorflow
-sqlalchemy
-psycopg2-binary
-python-multipart
 pydantic
+sqlalchemy
+python-multipart
+psycopg2
+psycopg2-binary
