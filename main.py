@@ -5,11 +5,18 @@ import logging
 from typing import List, Optional, Dict
 from collections import Counter
 
+<<<<<<< HEAD
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Float, LargeBinary
+=======
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Float
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
 import uvicorn
 import json
@@ -68,6 +75,7 @@ class PredictionHistory(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+<<<<<<< HEAD
 class SignImage(Base):
     """รูปตัวอย่างท่าทาง — 1 รูปต่อ 1 label เป๊ะๆ (เช่น "ปวดหัว_1", "ปวดหัว_2") ใช้โชว์ตอนแปลภาษา/คลังคำ"""
     __tablename__ = "sign_images"
@@ -78,6 +86,8 @@ class SignImage(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+=======
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
 Base.metadata.create_all(bind=engine)
 
 
@@ -417,6 +427,7 @@ async def upload_data(payload: LandmarkInput, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+<<<<<<< HEAD
 # ── Sign reference image (1 รูปต่อ 1 label เป๊ะๆ — รองรับรูปแยกตามขั้นตอน) ──
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5MB
 
@@ -459,6 +470,8 @@ async def delete_sign_image(label: str, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 
+=======
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
 @app.post("/predict")
 async def predict(payload: LandmarkInput, db: Session = Depends(get_db)):
     try:
@@ -535,23 +548,33 @@ async def predict_step(payload: LandmarkInput, db: Session = Depends(get_db)):
 @app.get("/signs")
 def get_signs(db: Session = Depends(get_db)):
     signs = db.query(SignModel).all()
+<<<<<<< HEAD
     image_labels = {row[0] for row in db.query(SignImage.label).all()}
+=======
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
     data: Dict[str, Dict] = {}
     for s in signs:
         base, step = parse_label(s.label)
         if base not in data:
+<<<<<<< HEAD
             data[base] = {"name": base, "steps": 0, "counts": {}, "has_motion": False, "images": {}}
+=======
+            data[base] = {"name": base, "steps": 0, "counts": {}, "has_motion": False}
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
         data[base]["steps"] = max(data[base]["steps"], step)
         key = str(step)
         data[base]["counts"][key] = data[base]["counts"].get(key, 0) + 1
         if s.has_motion == "yes":
             data[base]["has_motion"] = True
+<<<<<<< HEAD
         if key not in data[base]["images"]:
             data[base]["images"][key] = s.label in image_labels  # true ถ้าขั้นนี้มีรูปตัวอย่างแล้ว
 
     for entry in data.values():
         entry["has_image"] = any(entry["images"].values())  # มีรูปอย่างน้อย 1 ขั้น (ใช้โชว์ในกริดเลือกท่า)
 
+=======
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
     return sorted(data.values(), key=lambda x: x["name"])
 
 
@@ -605,10 +628,13 @@ def delete_sign(base_name: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"Sign '{base_name}' not found")
     for s in to_delete:
         db.delete(s)
+<<<<<<< HEAD
     # cascade: ลบรูปตัวอย่างของทุกขั้นตอนของท่านี้ด้วย (เช่น base_name, base_name_1, base_name_2, ...)
     for img in db.query(SignImage).all():
         if parse_label(img.label)[0] == base_name:
             db.delete(img)
+=======
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
     db.commit()
     return {"status": "success", "deleted_count": len(to_delete), "sign": base_name}
 

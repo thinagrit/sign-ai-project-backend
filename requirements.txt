@@ -4,4 +4,8 @@ pydantic
 python-multipart
 sqlalchemy
 psycopg2-binary
+<<<<<<< HEAD
 torch
+=======
+torch
+>>>>>>> 0d64e5d3cf94453ff57b4f3ce9d48b16d65b0006
