@@ -13,6 +13,15 @@ from sqlalchemy.orm import sessionmaker, Session, declarative_base
 import uvicorn
 import json
 
+# Deep learning inference (optional — falls back to KNN if unavailable)
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -114,6 +123,80 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==========================================
+# 3b. Deep Learning model (optional)
+# ==========================================
+# ถ้ามีไฟล์ sign_model.pt + label_encoder.json + model_meta.json อยู่ข้างๆ main.py
+# ระบบจะโหลดขึ้นมาใช้แทน KNN โดยอัตโนมัติ — ถ้าไม่มี จะ fallback ไปใช้ KNN เหมือนเดิม
+# (ไฟล์เหล่านี้ได้จากการรัน train_model.py กับข้อมูลที่ export จากหน้า "คลังคำศัพท์")
+MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
+DL_TARGET_DIM = 183  # ต้องตรงกับ TARGET_DIM ใน train_model.py
+
+dl_model = None
+dl_classes: List[str] = []
+
+if TORCH_AVAILABLE:
+    class SignMLP(nn.Module):
+        """ต้องมีสถาปัตยกรรมตรงกับตอนเทรนใน train_model.py ทุกประการ"""
+        def __init__(self, input_dim: int, num_classes: int):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, 256), nn.ReLU(), nn.BatchNorm1d(256), nn.Dropout(0.3),
+                nn.Linear(256, 128), nn.ReLU(), nn.BatchNorm1d(128), nn.Dropout(0.3),
+                nn.Linear(128, 64), nn.ReLU(),
+                nn.Linear(64, num_classes),
+            )
+
+        def forward(self, x):
+            return self.net(x)
+
+    def _try_load_dl_model():
+        global dl_model, dl_classes, DL_TARGET_DIM
+        meta_path = os.path.join(MODEL_DIR, "model_meta.json")
+        labels_path = os.path.join(MODEL_DIR, "label_encoder.json")
+        weights_path = os.path.join(MODEL_DIR, "sign_model.pt")
+
+        if not (os.path.exists(meta_path) and os.path.exists(labels_path) and os.path.exists(weights_path)):
+            logger.info("ยังไม่พบไฟล์โมเดล deep learning — ใช้ KNN เป็นค่าเริ่มต้น")
+            return
+
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            with open(labels_path, "r", encoding="utf-8") as f:
+                dl_classes = json.load(f)["classes"]
+
+            model = SignMLP(meta["input_dim"], meta["num_classes"])
+            model.load_state_dict(torch.load(weights_path, map_location="cpu"))
+            model.eval()
+
+            DL_TARGET_DIM = meta.get("target_dim", DL_TARGET_DIM)
+            dl_model = model
+            logger.info(f"โหลดโมเดล deep learning สำเร็จ ({meta['num_classes']} ท่า) — ใช้แทน KNN แล้ว")
+        except Exception as e:
+            logger.warning(f"โหลดโมเดล deep learning ไม่สำเร็จ ({e}) — ใช้ KNN แทน")
+
+    _try_load_dl_model()
+
+
+def pad_or_truncate(vec: List[float], target_len: int = DL_TARGET_DIM) -> List[float]:
+    """ทำให้ feature vector มีความยาวเท่ากับตอนเทรนเสมอ (ต้องตรงกับ train_model.py)"""
+    vec = list(vec)
+    if len(vec) >= target_len:
+        return vec[:target_len]
+    return vec + [0.0] * (target_len - len(vec))
+
+
+def dl_predict(points: List[float]):
+    """ทำนายด้วยโมเดล deep learning — คืนค่ารูปแบบเดียวกับ knn_predict: (label, confidence)"""
+    vec = pad_or_truncate(points, DL_TARGET_DIM)
+    x = torch.tensor([vec], dtype=torch.float32)
+    with torch.no_grad():
+        probs = F.softmax(dl_model(x), dim=1)[0]
+    conf, idx = torch.max(probs, dim=0)
+    return dl_classes[idx.item()], round(conf.item(), 2)
 
 
 # ==========================================
@@ -286,6 +369,14 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/model-info")
+async def model_info():
+    """เช็คว่าตอนนี้ /predict กำลังใช้ deep learning หรือ KNN"""
+    if dl_model is not None:
+        return {"engine": "deep_learning", "num_classes": len(dl_classes), "classes": dl_classes}
+    return {"engine": "knn", "note": "ยังไม่พบไฟล์โมเดล (sign_model.pt, label_encoder.json, model_meta.json)"}
+
+
 @app.post("/upload")
 async def upload_data(payload: LandmarkInput, db: Session = Depends(get_db)):
     if not payload.label or not payload.points:
@@ -321,11 +412,15 @@ async def predict(payload: LandmarkInput, db: Session = Depends(get_db)):
         if not payload.points:
             return {"label": "ไม่พบมือ", "base": "ไม่พบมือ", "step": 0, "confidence": 0}
 
-        signs = db.query(SignModel).all()
-        if not signs:
-            return {"label": "ไม่มีข้อมูลสอน", "base": "ไม่มีข้อมูลสอน", "step": 0, "confidence": 0}
+        # ใช้โมเดล deep learning ถ้าโหลดสำเร็จ ไม่งั้น fallback เป็น KNN
+        if dl_model is not None:
+            label, confidence = dl_predict(payload.points)
+        else:
+            signs = db.query(SignModel).all()
+            if not signs:
+                return {"label": "ไม่มีข้อมูลสอน", "base": "ไม่มีข้อมูลสอน", "step": 0, "confidence": 0}
+            label, confidence = knn_predict(payload.points, signs)
 
-        label, confidence = knn_predict(payload.points, signs)
         base, step = parse_label(label)
         motion_type = detect_motion_type(payload.points)
 
@@ -339,6 +434,7 @@ async def predict(payload: LandmarkInput, db: Session = Depends(get_db)):
             "step": step,
             "confidence": confidence,
             "motion_type": motion_type,  # "still" | "moving" | "circular"
+            "engine": "deep_learning" if dl_model is not None else "knn",
         }
     except Exception as e:
         logger.error(f"Predict Error: {e}")
@@ -352,15 +448,21 @@ async def predict_step(payload: LandmarkInput, db: Session = Depends(get_db)):
             return {"label": "ไม่พบมือ", "base": "", "step": 0, "confidence": 0}
 
         target_step = int(payload.label) if payload.label and payload.label.isdigit() else None
-        signs = db.query(SignModel).all()
-        if not signs:
-            return {"label": "ไม่มีข้อมูลสอน", "base": "", "step": 0, "confidence": 0}
 
-        filtered = [s for s in signs if parse_label(s.label)[1] == target_step] if target_step else signs
-        if not filtered:
-            filtered = signs
+        # ใช้โมเดล deep learning ถ้าโหลดสำเร็จ ไม่งั้น fallback เป็น KNN (กรองด้วย step)
+        if dl_model is not None:
+            label, confidence = dl_predict(payload.points)
+        else:
+            signs = db.query(SignModel).all()
+            if not signs:
+                return {"label": "ไม่มีข้อมูลสอน", "base": "", "step": 0, "confidence": 0}
 
-        label, confidence = knn_predict(payload.points, filtered)
+            filtered = [s for s in signs if parse_label(s.label)[1] == target_step] if target_step else signs
+            if not filtered:
+                filtered = signs
+
+            label, confidence = knn_predict(payload.points, filtered)
+
         base, step = parse_label(label)
         motion_type = detect_motion_type(payload.points)
 
@@ -370,6 +472,7 @@ async def predict_step(payload: LandmarkInput, db: Session = Depends(get_db)):
             "step": step,
             "confidence": confidence,
             "motion_type": motion_type,
+            "engine": "deep_learning" if dl_model is not None else "knn",
         }
     except Exception as e:
         logger.error(f"Predict-step Error: {e}")
