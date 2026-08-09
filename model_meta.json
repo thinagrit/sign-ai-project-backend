@@ -1,5 +1,5 @@
 {
   "input_dim": 183,
-  "num_classes": 4,
+  "num_classes": 8,
   "target_dim": 183
 }
