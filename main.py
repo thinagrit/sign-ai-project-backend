@@ -78,6 +78,15 @@ class SignImage(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+class SignDescription(Base):
+    """คำอธิบายท่าทาง — 1 ข้อความต่อ 1 ชื่อท่า (base_name รวมทุกขั้นตอน) ใช้โชว์ตอนเลือกท่าแปลภาษา"""
+    __tablename__ = "sign_descriptions"
+    id = Column(Integer, primary_key=True, index=True)
+    base_name = Column(String, unique=True, index=True)
+    description = Column(String)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -216,6 +225,10 @@ def dl_predict(points: List[float]):
 class LandmarkInput(BaseModel):
     label: Optional[str] = None
     points: List[float]             # may include velocity features appended
+
+
+class DescriptionInput(BaseModel):
+    description: str
 
 
 # ==========================================
@@ -459,6 +472,26 @@ async def delete_sign_image(label: str, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 
+# ── Sign description (1 ข้อความต่อ 1 ชื่อท่า — รวมทุกขั้นตอน) ──
+MAX_DESCRIPTION_LENGTH = 500
+
+@app.put("/sign-description/{base_name}")
+async def upsert_sign_description(base_name: str, payload: DescriptionInput, db: Session = Depends(get_db)):
+    base_name = base_name.strip()
+    text = payload.description.strip()
+    if len(text) > MAX_DESCRIPTION_LENGTH:
+        raise HTTPException(status_code=400, detail=f"คำอธิบายยาวเกินไป (จำกัด {MAX_DESCRIPTION_LENGTH} ตัวอักษร)")
+
+    existing = db.query(SignDescription).filter(SignDescription.base_name == base_name).first()
+    if existing:
+        existing.description = text
+        existing.created_at = datetime.datetime.utcnow()
+    else:
+        db.add(SignDescription(base_name=base_name, description=text))
+    db.commit()
+    return {"status": "success", "base_name": base_name, "description": text}
+
+
 @app.post("/predict")
 async def predict(payload: LandmarkInput, db: Session = Depends(get_db)):
     try:
@@ -536,11 +569,15 @@ async def predict_step(payload: LandmarkInput, db: Session = Depends(get_db)):
 def get_signs(db: Session = Depends(get_db)):
     signs = db.query(SignModel).all()
     image_labels = {row[0] for row in db.query(SignImage.label).all()}
+    descriptions = {row[0]: row[1] for row in db.query(SignDescription.base_name, SignDescription.description).all()}
     data: Dict[str, Dict] = {}
     for s in signs:
         base, step = parse_label(s.label)
         if base not in data:
-            data[base] = {"name": base, "steps": 0, "counts": {}, "has_motion": False, "images": {}}
+            data[base] = {
+                "name": base, "steps": 0, "counts": {}, "has_motion": False, "images": {},
+                "description": descriptions.get(base, ""),
+            }
         data[base]["steps"] = max(data[base]["steps"], step)
         key = str(step)
         data[base]["counts"][key] = data[base]["counts"].get(key, 0) + 1
@@ -609,6 +646,7 @@ def delete_sign(base_name: str, db: Session = Depends(get_db)):
     for img in db.query(SignImage).all():
         if parse_label(img.label)[0] == base_name:
             db.delete(img)
+    db.query(SignDescription).filter(SignDescription.base_name == base_name).delete()  # cascade: ลบคำอธิบายด้วย
     db.commit()
     return {"status": "success", "deleted_count": len(to_delete), "sign": base_name}
 
